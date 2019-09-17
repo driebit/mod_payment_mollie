@@ -1,0 +1,3 @@
+[
+    {mollie_payment_webhook, [ "mollie", "webhook", payment_nr ], controller_mollie_webhook, []}
+].
