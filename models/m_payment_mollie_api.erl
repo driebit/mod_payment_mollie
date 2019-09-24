@@ -30,7 +30,7 @@
     ]).
 
 -include("zotonic.hrl").
--include("../../mod_payment/include/payment.hrl").
+-include("mod_payment/include/payment.hrl").
 
 -define(MOLLIE_API_URL, "https://api.mollie.nl/v1/").
 
@@ -71,7 +71,7 @@ create(PaymentId, Context) ->
                 end,
             Args = [
                 {amount, proplists:get_value(amount, Payment)},
-                {description, proplists:get_value(description, Payment)},
+                {description, valid_description( proplists:get_value(description, Payment) )},
                 {webhookUrl, WebhookUrl},
                 {redirectUrl, RedirectUrl},
                 {metadata, iolist_to_binary([ mochijson2:encode(Metadata) ])}
@@ -114,9 +114,15 @@ create(PaymentId, Context) ->
                     lager:error("API error creating mollie payment for #~p: ~p", [PaymentId, Error]),
                     {error, Error}
             end;
-        _Currency ->
+        Currency ->
+            lager:error("Mollie payment request with non EUR currency: ~p", [Currency]),
             {error, {currency, only_eur}}
     end.
+
+valid_description(<<>>) -> <<"Payment">>;
+valid_description(undefined) -> <<"Payment">>;
+valid_description(D) when is_binary(D) -> D.
+
 
 %% @doc Allow special hostname for the webhook, useful for testing.
 webhook_url(PaymentNr, Context) ->
@@ -225,8 +231,11 @@ api_call(Method, Endpoint, Args, Context) ->
                                     {ok, Props}
                             end
                     end;
-                Other ->
-                    Other
+                {ok, {{_, Code, _}, Headers, Payload}} ->
+                    lager:error("Mollie returns ~p: ~p ~p", [ Code, Payload, Headers]),
+                    {error, Code};
+                {error, _} = Error ->
+                    Error
             end;
         {error, notfound} ->
             {error, api_key_not_set}
