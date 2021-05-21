@@ -231,6 +231,8 @@ api_call(Method, Endpoint, Args, Context) ->
                                     {ok, Props}
                             end
                     end;
+                {ok, {{_, 410, _}, _, _}} ->
+                    {error, 410};
                 {ok, {{_, Code, _}, Headers, Payload}} ->
                     lager:error("Mollie returns ~p: ~p ~p", [ Code, Payload, Headers]),
                     {error, Code};
@@ -338,13 +340,13 @@ has_subscription(UserId, Context) ->
                           "/subscriptions/" ++
                           z_convert:to_list(SubscriptionId),
                       [], Context) of
-            {ok, {{_, 410, _}, _, _}} ->
-                false;
-            {ok, {{_, 404, _}, _, _}} ->
-                false;
             {ok, Response} ->
                 Status = maps:get(<<"status">>, Response),
                 Status == <<"active">>;
+            {error, 410}->
+                false;
+            {error, 404} ->
+                false;
             {error, Error} ->
                 m_payment_log:log(
                   CustomerId,
