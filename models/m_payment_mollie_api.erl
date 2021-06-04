@@ -618,8 +618,8 @@ has_subscription(UserId, Context) ->
             false
     end.
 
-is_subscription_active(#{ end_date := undefined }) -> false;
-is_subscription_active(#{ end_date := _}) -> true.
+is_subscription_active(#{ end_date := undefined }) -> true;
+is_subscription_active(#{ end_date := _}) -> false.
 
 
 cancel_subscription({mollie_subscription, CustId, SubId}, Context) ->
