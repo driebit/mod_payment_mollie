@@ -27,7 +27,7 @@
     observe_payment_psp_request/2,
     observe_payment_psp_view_url/2,
     observe_payment_psp_status_sync/2,
-    observe_cancel_subscription_psp_request/2,
+    observe_cancel_recurring_psp_request/2,
     observe_tick_24h/2
 ]).
 
@@ -57,7 +57,7 @@ observe_payment_psp_status_sync(#payment_psp_status_sync{}, _Context) ->
     undefined.
 
 %% @doc Cancel the subscription at Mollie
-observe_cancel_subscription_psp_request(#cancel_subscription_psp_request{ user_id = UserId }, Context) ->
+observe_cancel_recurring_psp_request(#cancel_recurring_psp_request{ user_id = UserId }, Context) ->
     m_payment_mollie_api:cancel_subscription(UserId, Context).
 
 

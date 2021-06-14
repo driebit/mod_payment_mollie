@@ -56,7 +56,7 @@ create(PaymentId, Context) ->
                 {<<"payment_nr">>, proplists:get_value(payment_nr, Payment)}
             ]},
             Recurring =
-                case proplists:get_value(recurring, Payment) of
+                case proplists:get_value(is_recurring_start, Payment) of
                     true ->
                         [{recurringType, <<"first">>}];
                     false ->
@@ -302,7 +302,7 @@ handle_new_payment(PaymentId, Payment, #{ <<"recurringType">> := <<"recurring">>
             PaymentId = proplists:get_value(id, Payment),
             update_payment_status(PaymentId, Status, DateTime, Context);
         {error, notfound} ->
-            case m_payment:insert_recurring(PaymentId, DateTime, Currency, AmountNr, Context) of
+            case m_payment:insert_recurring_payment(PaymentId, DateTime, Currency, AmountNr, Context) of
                 {ok, NewPaymentId} ->
                     PSPHandler = #payment_psp_handler{
                         psp_module = mod_payment_mollie,
@@ -313,7 +313,7 @@ handle_new_payment(PaymentId, Payment, #{ <<"recurringType">> := <<"recurring">>
                     ok = m_payment:update_psp_handler(NewPaymentId, PSPHandler, Context),
                     update_payment_status(NewPaymentId, Status, DateTime, Context);
                 {error, _} = Error ->
-                    lager:error("Payment PSP Mollie could not insert recurring payment for payment #~p: ~p ~p", [PaymentId, Error, JSON]),
+                    lager:error("Payment PSP Mollie could not insert received recurring payment for payment #~p: ~p ~p", [PaymentId, Error, JSON]),
                     Error
             end
     end;
