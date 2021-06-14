@@ -416,6 +416,9 @@ api_call(Method, Endpoint, Args, Context) ->
                                     {ok, Props}
                             end
                     end;
+                {ok, {{_, 410, _}, Headers, Payload}} ->
+                    lager:debug("Mollie API call to ~p returns ~p: ~p ~p", [ Url, 410, Payload, Headers]),
+                    {error, 410};
                 {ok, {{_, Code, _}, Headers, Payload}} ->
                     lager:error("Mollie API call to ~p returns ~p: ~p ~p", [ Url, Code, Payload, Headers]),
                     {error, Code};
