@@ -21,7 +21,7 @@
 -mod_title("Payments using Mollie").
 -mod_description("Payments using Payment Service Provider Mollie").
 -mod_author("Driebit").
--mod_depends([ mod_payment ]).
+-mod_depends([ mod_payment, mod_admin ]).
 
 -export([
     observe_payment_psp_request/2,
