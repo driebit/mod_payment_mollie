@@ -353,6 +353,7 @@ handle_new_payment(PaymentId, _Payment, JSON, Context) ->
     update_payment_status(PaymentId, Status, DateTime, Context).
 
 
+status_date(#{ <<"status">> := <<"charged_back">> }) -> calendar:universal_time();
 status_date(#{ <<"expiredDatetime">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
 status_date(#{ <<"failedDatetime">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
 status_date(#{ <<"cancelledDatetime">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
@@ -371,7 +372,7 @@ update_payment_status(PaymentId, <<"paidout">>, Date, Context) ->      mod_payme
 update_payment_status(PaymentId, <<"refunded">>, Date, Context) ->     mod_payment:set_payment_status(PaymentId, refunded, Date, Context);
 update_payment_status(PaymentId, <<"charged_back">>, Date, Context) -> mod_payment:set_payment_status(PaymentId, refunded, Date, Context);
 update_payment_status(PaymentId, Status, _Date, _Context) ->
-    lager:error("Mollie payment status is uknown: ~p (for payment #~p)", [ Status, PaymentId ]),
+    lager:error("Mollie payment status is unknown: ~p (for payment #~p)", [ Status, PaymentId ]),
     ok.
 
 api_call(Method, Endpoint, Args, Context) ->
