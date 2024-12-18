@@ -729,6 +729,7 @@ cancel_subscription({mollie_subscription, CustId, SubId}, Context) ->
                       z_convert:to_list(SubId),
                   [], Context) of
         {ok, _} ->
+            lager:info("Cancelled mollie subscription for #~p", [CustId]),
             ok;
         {error, 410} ->
             lager:info("API error cancelling mollie subscription for #~p: ~p (already canceled)", [CustId, 410]),
