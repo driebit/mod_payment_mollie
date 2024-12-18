@@ -1,8 +1,9 @@
 %% @author Marc Worrell <marc@worrell.nl>
-%% @copyright 2018-2021 Driebit BV
+%% @copyright 2018-2024 Driebit BV
 %% @doc Payment PSP module for Mollie
+%% @end
 
-%% Copyright 2018-2021 Driebit BV
+%% Copyright 2018-2024 Driebit BV
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.

@@ -1,7 +1,8 @@
-%% @copyright 2018-2021 Driebit BV
+%% @copyright 2018-2024 Driebit BV
 %% @doc API interface for Mollie PSP
+%% @end
 
-%% Copyright 2018-2021 Driebit BV
+%% Copyright 2018-2024 Driebit BV
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -31,10 +32,16 @@
     cancel_subscription/2
     ]).
 
+% Testing
+-export([
+    fetch_payments_since/4
+    ]).
+
+
 -include("zotonic.hrl").
 -include("mod_payment/include/payment.hrl").
 
--define(MOLLIE_API_URL, "https://api.mollie.nl/v1/").
+-define(MOLLIE_API_URL, "https://api.mollie.nl/v2/").
 
 -define(TIMEOUT_REQUEST, 10000).
 -define(TIMEOUT_CONNECT, 5000).
@@ -42,8 +49,8 @@
 %% @doc Create a new payment with Mollie (https://www.mollie.com/nl/docs/reference/payments/create)
 create(PaymentId, Context) ->
     {ok, Payment} = m_payment:get(PaymentId, Context),
-    case proplists:get_value(currency, Payment) of
-        <<"EUR">> ->
+    case proplists:lookup(currency, Payment) of
+        {currency, <<"EUR">>} ->
             RedirectUrl = z_context:abs_url(
                 z_dispatcher:url_for(
                     payment_psp_done,
@@ -58,12 +65,13 @@ create(PaymentId, Context) ->
             Recurring =
                 case proplists:get_value(is_recurring_start, Payment) of
                     true ->
-                        [{recurringType, <<"first">>}];
+                        [{sequenceType, <<"first">>}];
                     false ->
                         []
                 end,
             Args = [
-                {amount, proplists:get_value(amount, Payment)},
+                {'amount[value]', filter_format_price:format_price(proplists:get_value(amount, Payment), Context)},
+                {'amount[currency]', proplists:get_value(currency, Payment, <<"EUR">>)},
                 {description, valid_description( proplists:get_value(description, Payment) )},
                 {webhookUrl, WebhookUrl},
                 {redirectUrl, RedirectUrl},
@@ -73,11 +81,15 @@ create(PaymentId, Context) ->
             case maybe_add_custid(Payment, Args, Context) of
                 {ok, ArgsCust} ->
                     case api_call(post, "payments", ArgsCust, Context) of
-                        {ok, JSON} ->
-                            <<"payment">> = maps:get(<<"resource">>, JSON),
-                            MollieId = maps:get(<<"id">>, JSON),
-                            Links = maps:get(<<"links">>, JSON),
-                            PaymentUrl = maps:get(<<"paymentUrl">>, Links),
+                        {ok, #{
+                                <<"resource">> := <<"payment">>,
+                                <<"id">> := MollieId,
+                                <<"_links">> := #{
+                                    <<"checkout">> := #{
+                                        <<"href">> := PaymentUrl
+                                    }
+                                }
+                        } = JSON} ->
                             m_payment_log:log(
                                 PaymentId,
                                 <<"CREATED">>,
@@ -94,13 +106,26 @@ create(PaymentId, Context) ->
                                 psp_data = JSON,
                                 redirect_uri = PaymentUrl
                             }};
+                        {ok, JSON} ->
+                            m_payment_log:log(
+                              PaymentId,
+                              <<"ERROR">>,
+                              [
+                               {psp_module, mod_payment_mollie},
+                               {description, "API Unexpected result creating payment with Mollie"},
+                               {request_json, JSON},
+                               {request_args, Args}
+                              ],
+                              Context),
+                            lager:error("API unexpected result creating mollie payment for #~p: ~p", [PaymentId, JSON]),
+                            {error, unexpected_result};
                         {error, Error} ->
                             m_payment_log:log(
                               PaymentId,
                               <<"ERROR">>,
                               [
                                {psp_module, mod_payment_mollie},
-                               {description, "API Error creating order with Mollie"},
+                               {description, "API Error creating payment with Mollie"},
                                {request_result, Error},
                                {request_args, Args}
                               ],
@@ -111,7 +136,7 @@ create(PaymentId, Context) ->
                 {error, _} = Error ->
                     Error
             end;
-        Currency ->
+        {currency, Currency} ->
             lager:error("Mollie payment request with non EUR currency: ~p", [Currency]),
             {error, {currency, only_eur}}
     end.
@@ -137,17 +162,18 @@ valid_description(D) when is_binary(D) -> D.
 %% @doc Allow special hostname for the webhook, useful for testing.
 webhook_url(PaymentNr, Context) ->
     Path = z_dispatcher:url_for(mollie_payment_webhook, [ {payment_nr, PaymentNr} ], Context),
-    case m_config:get_value(mod_payment_mollie, webhook_host, Context) of
-        <<"http", _/binary>> = Host -> <<Host/binary, Path/binary>>;
+    case z_convert:to_binary(m_config:get_value(mod_payment_mollie, webhook_host, Context)) of
+        <<"http:", _/binary>> = Host -> <<Host/binary, Path/binary>>;
+        <<"https:", _/binary>> = Host -> <<Host/binary, Path/binary>>;
         _ -> z_context:abs_url(Path, Context)
     end.
 
--spec payment_url(binary()) -> binary().
+-spec payment_url(binary()|string()) -> binary().
 payment_url(MollieId) ->
     <<"https://www.mollie.com/dashboard/payments/", (z_convert:to_binary(MollieId))/binary>>.
 
 
-%% @doc Pull all payments from Mollie (since the previous pull) and sync them to our payment table.
+%% @doc Pull all recurring payments from Mollie (since the previous pull) and sync them to our payment table.
 -spec payment_sync_recurrent(z:context()) -> ok | {error, term()}.
 payment_sync_recurrent(Context) ->
     Oldest = z_convert:to_binary( m_config:get_value(mod_payment_mollie, sync_periodic, Context) ),
@@ -160,7 +186,7 @@ payment_sync_recurrent(Context) ->
                     handle_missed_recurrent(ExtPayment, Context)
                 end,
                 lists:reverse(ExtPayments)),
-            #{ <<"createdDatetime">> := Newest } = hd(ExtPayments),
+            #{ <<"createdAt">> := Newest } = hd(ExtPayments),
             m_config:set_value(mod_payment_mollie, sync_periodic, Newest, Context),
             ok;
         {error, _} = Error ->
@@ -169,11 +195,11 @@ payment_sync_recurrent(Context) ->
 
 fetch_payments_since(Oldest, NextLink, Acc, Context) ->
     Url = case NextLink of
-        undefined -> "payments?count=250";
-        _ -> z_convert:to_list(NextLink)
+        undefined -> "payments?limit=250";
+        _ -> NextLink
     end,
     case api_call(get, Url, [], Context) of
-        {ok, #{ <<"data">> := Payments } = JSON} ->
+        {ok, #{ <<"_embedded">> := #{ <<"payments">> := Payments } } = JSON} ->
             Newer = lists:filter(
                 fun(P) ->
                     status_date(P) >= Oldest
@@ -184,8 +210,8 @@ fetch_payments_since(Oldest, NextLink, Acc, Context) ->
                 [] ->
                     {ok, Acc1};
                 _ ->
-                    case maps:get(<<"links">>, JSON, undefined) of
-                        #{ <<"next">> := Next } when is_binary(Next) ->
+                    case maps:get(<<"_links">>, JSON, undefined) of
+                        #{ <<"next">> := #{ <<"href">> := Next } } when is_binary(Next) ->
                             fetch_payments_since(Oldest, Next, Acc1, Context);
                         _ ->
                             {ok, Acc1}
@@ -195,23 +221,22 @@ fetch_payments_since(Oldest, NextLink, Acc, Context) ->
             Error
     end.
 
-handle_missed_recurrent(#{ <<"recurringType">> := <<"recurring">> } = JSON, Context) ->
+handle_missed_recurrent(#{ <<"sequenceType">> := <<"recurring">> } = JSON, Context) ->
     #{
         <<"id">> := ExtId,
-        <<"links">> := #{
-            <<"webhookUrl">> := WebhookUrl
-        }
+        <<"webhookUrl">> := WebhookUrl
     } = JSON,
     [ WebhookUrl1 | _ ] = binary:split(WebhookUrl, <<"?">>),
-    PaymentNr = lists:last( binary:split(WebhookUrl1, <<"/">>, [ global ])),
-    case m_payment:get(PaymentNr, Context) of
-        {ok, Payment} ->
-            case proplists:get_value(psp_module, Payment) of
-                mod_payment_mollie ->
+    FirstPaymentNr = lists:last( binary:split(WebhookUrl1, <<"/">>, [ global ])),
+    case m_payment:get(FirstPaymentNr, Context) of
+        {ok, FirstPayment} ->
+            % This is the original payment starting the sequence
+            case proplists:lookup(psp_module, FirstPayment) of
+                {psp_module, mod_payment_mollie} ->
                     % Fetch the status from Mollie
-                    PaymentId = proplists:get_value(id, Payment),
+                    {id, FirstPaymentId} = proplists:lookup(id, FirstPayment),
                     m_payment_log:log(
-                        PaymentId,
+                        FirstPaymentId,
                         <<"WEBHOOK">>,
                         [
                            {psp_module, mod_payment_mollie},
@@ -219,16 +244,19 @@ handle_missed_recurrent(#{ <<"recurringType">> := <<"recurring">> } = JSON, Cont
                            {payment, JSON}
                         ],
                         Context),
-                    handle_new_payment(PaymentId, Payment, JSON, Context);
-                PSP ->
-                    lager:error("Payment PSP Mollie webhook call for unknown PSP ~p / ~p: ~p", [PaymentNr, ExtId, PSP]),
+                    handle_new_payment(FirstPaymentId, FirstPayment, JSON, Context);
+                {psp_module, PSP} ->
+                    lager:error("Payment PSP Mollie webhook call for unknown PSP ~p / ~p: ~p",
+                                [FirstPaymentNr, ExtId, PSP]),
                     {error, notfound}
             end;
         {error, notfound} ->
-            lager:error("Payment PSP Mollie webhook call with unknown id ~p / ~p", [PaymentNr, ExtId]),
+            lager:error("Payment PSP Mollie webhook call with unknown id ~p / ~p",
+                        [FirstPaymentNr, ExtId]),
             {error, notfound};
         {error, _} = Error ->
-            lager:error("Payment PSP Mollie webhook call with id ~p / ~p, fetching payment error: ~p", [PaymentNr, ExtId, Error]),
+            lager:error("Payment PSP Mollie webhook call with id ~p / ~p, fetching payment error: ~p",
+                        [FirstPaymentNr, ExtId, Error]),
             Error
     end;
 handle_missed_recurrent(_NonRecurringPayment, _Context) ->
@@ -240,10 +268,10 @@ handle_missed_recurrent(_NonRecurringPayment, _Context) ->
 payment_sync(PaymentNrOrId, ExtId, Context) ->
     case m_payment:get(PaymentNrOrId, Context) of
         {ok, Payment} ->
-            case proplists:get_value(psp_module, Payment) of
-                mod_payment_mollie ->
+            case proplists:lookup(psp_module, Payment) of
+                {psp_module, mod_payment_mollie} ->
                     % Fetch the status from Mollie
-                    PaymentId = proplists:get_value(id, Payment),
+                    {id, PaymentId} = proplists:lookup(id, Payment),
                     lager:info("Payment PSP Mollie webhook call for payment #~p", [PaymentId]),
                     case api_call(get, "payments/" ++ z_convert:to_list(ExtId), [], Context) of
                         {ok, #{ <<"resource">> := <<"payment">> } = JSON} ->
@@ -271,7 +299,7 @@ payment_sync(PaymentNrOrId, ExtId, Context) ->
                             lager:error("API error creating mollie payment for #~p: ~p", [PaymentId, Error]),
                             Error
                     end;
-                PSP ->
+                {psp_module, PSP} ->
                     lager:error("Payment PSP Mollie webhook call for unknown PSP ~p / ~p: ~p", [PaymentNrOrId, ExtId, PSP]),
                     {error, notfound}
             end;
@@ -283,26 +311,33 @@ payment_sync(PaymentNrOrId, ExtId, Context) ->
             Error
     end.
 
-handle_new_payment(PaymentId, Payment, #{ <<"recurringType">> := <<"recurring">> } = JSON, Context) ->
-    % A recurring payment for an existing payment.
-    % The given Payment MUST have 'recurring' set.
+handle_new_payment(FirstPaymentId, _FirstPayment, #{ <<"sequenceType">> := <<"recurring">> } = JSON, Context) ->
+    % A recurring payment for an existing (first) payment.
+    % The given (first) Payment MUST have 'recurring' set.
     #{
         <<"id">> := ExtId,
         <<"status">> := Status,
         <<"subscriptionId">> := _SubscriptionId,
-        <<"amount">> := Amount,
+        <<"amount">> := #{
+            <<"currency">> := Currency,
+            <<"value">> := Amount
+        },
         <<"description">> := Description
     } = JSON,
     % Create a new payment, referring to the PaymentId
-    Currency = proplists:get_value(currency, Payment),
     AmountNr = z_convert:to_float(Amount),
     DateTime = z_convert:to_datetime( status_date(JSON) ),
     case m_payment:get_by_psp(mod_payment_mollie, ExtId, Context) of
-        {ok, Payment} ->
-            PaymentId = proplists:get_value(id, Payment),
-            update_payment_status(PaymentId, Status, DateTime, Context);
+        {ok, RecurringPayment} ->
+            % Update the status of an already imported recurring payment.
+            % This payment is linked to the first payment.
+            {id, RecurringPaymentId} = proplists:lookup(id, RecurringPayment),
+            update_payment_status(RecurringPaymentId, Status, DateTime, Context);
         {error, notfound} ->
-            case m_payment:insert_recurring_payment(PaymentId, DateTime, Currency, AmountNr, Context) of
+            % New recurring payment for an existing first payment.
+            % Insert a new payment in our tables and the update that payment with
+            % the newly received status.
+            case m_payment:insert_recurring_payment(FirstPaymentId, DateTime, Currency, AmountNr, Context) of
                 {ok, NewPaymentId} ->
                     PSPHandler = #payment_psp_handler{
                         psp_module = mod_payment_mollie,
@@ -313,52 +348,48 @@ handle_new_payment(PaymentId, Payment, #{ <<"recurringType">> := <<"recurring">>
                     ok = m_payment:update_psp_handler(NewPaymentId, PSPHandler, Context),
                     update_payment_status(NewPaymentId, Status, DateTime, Context);
                 {error, _} = Error ->
-                    lager:error("Payment PSP Mollie could not insert received recurring payment for payment #~p: ~p ~p", [PaymentId, Error, JSON]),
+                    lager:error("Payment PSP Mollie could not insert received recurring payment for first payment #~p: ~p ~p",
+                                [FirstPaymentId, Error, JSON]),
                     Error
             end
     end;
-handle_new_payment(PaymentId, Payment, #{ <<"recurringType">> := <<"first">> } = JSON, Context) ->
+handle_new_payment(FirstPaymentId, FirstPayment, #{ <<"sequenceType">> := <<"first">> } = JSON, Context) ->
     % First recurring payment for an existing payment - start the subscription
     #{
         <<"status">> := Status
     } = JSON,
     DateTime = z_convert:to_datetime( status_date(JSON) ),
-    case update_payment_status(PaymentId, Status, DateTime, Context) of
-        ok ->
-            case Status of
-                <<"paid">> -> create_subscription(Payment, Context);
-                _ -> ok
-            end;
-        {error, _} = Error ->
-            Error
+    case update_payment_status(FirstPaymentId, Status, DateTime, Context) of
+        ok when Status =:= <<"paid">> -> create_subscription(FirstPayment, Context);
+        ok -> ok;
+        {error, _} = Error -> Error
     end;
-handle_new_payment(PaymentId, _Payment, JSON, Context) ->
+handle_new_payment(OneOffPaymentId, _OneOffPayment, JSON, Context) ->
     #{
-        <<"status">> := Status,
-        <<"amountRefunded">> := _AmountRefunded
+        <<"status">> := Status
     } = JSON,
     lager:info("Payment PSP Mollie got status ~p for payment #~p",
-               [Status, PaymentId]),
+               [Status, OneOffPaymentId]),
     m_payment_log:log(
-      PaymentId,
-      <<"STATUS">>,
-      [
-        {psp_module, mod_payment_mollie},
-        {description, "New payment status"},
-        {status, JSON}
-      ],
-      Context),
+        OneOffPaymentId,
+        <<"STATUS">>,
+        [
+            {psp_module, mod_payment_mollie},
+            {description, "New payment status"},
+            {status, JSON}
+        ],
+        Context),
     % UPDATE OUR ORDER STATUS
     DateTime = z_convert:to_datetime( status_date(JSON) ),
-    update_payment_status(PaymentId, Status, DateTime, Context).
+    update_payment_status(OneOffPaymentId, Status, DateTime, Context).
 
 
 status_date(#{ <<"status">> := <<"charged_back">> }) -> calendar:universal_time();
-status_date(#{ <<"expiredDatetime">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
-status_date(#{ <<"failedDatetime">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
-status_date(#{ <<"cancelledDatetime">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
-status_date(#{ <<"paidDatetime">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
-status_date(#{ <<"createdDatetime">> := Date }) when is_binary(Date), Date =/= <<>> -> Date.
+status_date(#{ <<"expiredAt">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
+status_date(#{ <<"failedAt">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
+status_date(#{ <<"canceledAt">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
+status_date(#{ <<"paidAt">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
+status_date(#{ <<"createdAt">> := Date }) when is_binary(Date), Date =/= <<>> -> Date.
 
 % Status is one of: open cancelled expired failed pending paid paidout refunded charged_back
 update_payment_status(PaymentId, <<"open">>, Date, Context) ->         mod_payment:set_payment_status(PaymentId, new, Date, Context);
@@ -380,6 +411,7 @@ api_call(Method, Endpoint, Args, Context) ->
         {ok, ApiKey} ->
             Url = case Endpoint of
                 <<"https:", _/binary>> -> z_convert:to_list(Endpoint);
+                "https:" ++ _ -> Endpoint;
                 _ -> ?MOLLIE_API_URL ++ z_convert:to_list(Endpoint)
             end,
             Hs = [
@@ -390,18 +422,18 @@ api_call(Method, Endpoint, Args, Context) ->
                               {Url, Hs};
                           _ ->
                               FormData = lists:map(
-                                           fun
-                                               ({K,V}) ->
-                                                          {z_convert:to_list(K), z_convert:to_list(V)}
-                                                  end,
-                                           Args),
+                                            fun({K,V}) ->
+                                                {z_convert:to_list(K), z_convert:to_list(V)}
+                                            end,
+                                            Args),
                               Body = mochiweb_util:urlencode(FormData),
                               {Url, Hs, "application/x-www-form-urlencoded", Body}
                       end,
             lager:debug("Making API call to Mollie: ~p~n", [Request]),
             case httpc:request(
                     Method, Request,
-                    [ {autoredirect, true}, {relaxed, false}, {timeout, ?TIMEOUT_REQUEST}, {connect_timeout, ?TIMEOUT_CONNECT} ],
+                    [ {autoredirect, true}, {relaxed, false},
+                      {timeout, ?TIMEOUT_REQUEST}, {connect_timeout, ?TIMEOUT_CONNECT} ],
                     [ {sync, true}, {body_format, binary} ])
             of
                 {ok, {{_, X20x, _}, Headers, Payload}} when ((X20x >= 200) and (X20x < 400)) ->
@@ -448,94 +480,153 @@ api_key(Context) ->
     end.
 
 
-valid_mandate(#{ <<"status">> := <<"pending">> }) -> true;
-valid_mandate(#{ <<"status">> := <<"valid">> }) -> true;
-valid_mandate(_) -> false.
+is_valid_mandate(#{ <<"status">> := <<"pending">> }) -> true;
+is_valid_mandate(#{ <<"status">> := <<"valid">> }) -> true;
+is_valid_mandate(_) -> false.
 
 
-create_subscription(Payment, Context) ->
-    {id, PaymentId} = proplists:lookup(id, Payment),
-    {user_id, UserId} = proplists:lookup(user_id, Payment),
-    case proplists:get_value(psp_data, Payment) of
+create_subscription(FirstPayment, Context) ->
+    case proplists:get_value(psp_data, FirstPayment) of
+        #{
+            <<"sequenceType">> := <<"first">>,
+            <<"customerId">> := CustomerId
+        } ->
+            % v2 API data
+            create_subscription_1(FirstPayment, CustomerId, Context);
         #{
             <<"recurringType">> := <<"first">>,
             <<"customerId">> := CustomerId
         } ->
-            case api_call(get, "customers/" ++ z_convert:to_list(CustomerId) ++ "/mandates", [], Context) of
-                {ok, Response} ->
-                    Mandates = maps:get(<<"data">>, Response, []),
-                    case lists:filter(fun valid_mandate/1, Mandates) of
-                        [] ->
+            % v1 API data
+            create_subscription_1(FirstPayment, CustomerId, Context);
+        PspData ->
+            % Log an error with the payment
+            {id, PaymentId} = proplists:lookup(id, FirstPayment),
+            {user_id, UserId} = proplists:lookup(user_id, FirstPayment),
+            m_payment_log:log(
+                PaymentId,
+                <<"ERROR">>,
+                [
+                    {psp_module, mod_payment_mollie},
+                    {description, <<"Could not create a subscription: PSP data missing sequenceType and/or customerId">>}
+                ],
+                Context),
+            lager:error("Mollie payment PSP data missing sequenceType and/or customerId, payment ~p (user ~p): ~p",
+                        [ PaymentId, UserId, PspData ]),
+            {error, pspdata}
+    end.
+
+create_subscription_1(FirstPayment, CustomerId, Context) ->
+    {id, PaymentId} = proplists:lookup(id, FirstPayment),
+    {user_id, UserId} = proplists:lookup(user_id, FirstPayment),
+    case api_call(get, "customers/" ++ z_convert:to_list(CustomerId) ++ "/mandates", [], Context) of
+        {ok, #{
+            <<"_embedded">> := #{
+                <<"mandates">> := Mandates
+            }
+        }} ->
+            case lists:any(fun is_valid_mandate/1, Mandates) of
+                true ->
+                    {{Year, Month, Day}, _} = calendar:local_time(),
+                    YearFromNow = io_lib:format("~4..0w-~2..0w-~2..0w", [Year + 1, Month, Day]),
+                    Email = z_convert:to_binary( m_rsc:p_no_acl(UserId, email, Context) ),
+                    WebhookUrl = webhook_url(proplists:get_value(payment_nr, FirstPayment), Context),
+                    Args = [
+                        {'amount[value]', filter_format_price:format_price(proplists:get_value(amount, FirstPayment), Context)},
+                        {'amount[currency]', proplists:get_value(currency, FirstPayment, <<"EUR">>)},
+                        {interval, <<"12 months">>},
+                        {startDate, list_to_binary(YearFromNow)},
+                        {webhookUrl, WebhookUrl},
+                        {description, <<"Subscription for ", Email/binary, " - ", CustomerId/binary>>}
+                    ],
+                    case api_call(post, "customers/" ++ z_convert:to_list(CustomerId) ++ "/subscriptions",
+                                  Args, Context)
+                    of
+                        {ok, #{
+                            <<"resource">> := <<"subscription">>,
+                            <<"status">> := SubStatus
+                        } = Sub} ->
+                            lager:info("Mollie created subscription for customer ~p (~p)",
+                                       [ CustomerId, SubStatus ]),
+                            m_payment_log:log(
+                                PaymentId,
+                                <<"SUBSCRIPTION">>,
+                                [
+                                    {psp_module, mod_payment_mollie},
+                                    {description, <<"Created subscription">>},
+                                    {request_result, Sub}
+                                ],
+                                Context),
                             ok;
-                        _ ->
-                            {{Year, Month, Day}, _} = calendar:local_time(),
-                            YearFromNow = io_lib:format("~4..0w-~2..0w-~2..0w", [Year + 1, Month, Day]),
-                            Email = z_convert:to_binary( m_rsc:p_no_acl(UserId, email, Context) ),
-                            WebhookUrl = webhook_url(proplists:get_value(payment_nr, Payment), Context),
-                            Args = [
-                                {amount, proplists:get_value(amount, Payment)},
-                                {interval, <<"12 months">>},
-                                {startDate, list_to_binary(YearFromNow)},
-                                {webhookUrl, WebhookUrl},
-                                {description, <<"Subscription for ", Email/binary, " - ", CustomerId/binary>>}
-                            ],
-                            case api_call(post, "customers/" ++ z_convert:to_list(CustomerId) ++ "/subscriptions",
-                                          Args, Context)
-                            of
-                                {ok, Sub} ->
-                                    m_payment_log:log(
-                                        PaymentId,
-                                        <<"SUBSCRIPTION">>,
-                                        [
-                                            {psp_module, mod_payment_mollie},
-                                            {description, <<"Created subscription">>},
-                                            {request_result, Sub}
-                                        ],
-                                        Context),
-                                    ok;
-                                {error, _} = Error ->
-                                    m_payment_log:log(
-                                        PaymentId,
-                                        <<"ERROR">>,
-                                        [
-                                            {psp_module, mod_payment_mollie},
-                                            {description, <<"API Error creating subscription">>},
-                                            {request_result, Error}
-                                        ],
-                                        Context),
-                                    Error
-                            end
+                        {ok, JSON} ->
+                            m_payment_log:log(
+                                PaymentId,
+                                <<"ERROR">>,
+                                [
+                                    {psp_module, mod_payment_mollie},
+                                    {description, <<"API Unexpected result creating subscription from Mollie">>},
+                                    {request_result, JSON}
+                                ],
+                                Context),
+                            lager:error("API unexpected result creating subscription for payment ~p (user ~p): ~p",
+                                        [ PaymentId, UserId, JSON ]),
+                            {error, unexpected_result};
+                        {error, Reason} = Error ->
+                            lager:error("Mollie error creating subscription for customer ~p: ~p",
+                                        [ CustomerId, Reason ]),
+                            m_payment_log:log(
+                                PaymentId,
+                                <<"ERROR">>,
+                                [
+                                    {psp_module, mod_payment_mollie},
+                                    {description, <<"API Error creating subscription">>},
+                                    {request_result, Error}
+                                ],
+                                Context),
+                            Error
                     end;
-                {error, _} = Error ->
-                    % Log an error with the payment
+                false ->
+                    lager:info("Mollie created a subscription request but no valid mandates for customer ~p (payment ~p)",
+                               [ CustomerId, PaymentId ]),
                     m_payment_log:log(
                         PaymentId,
-                        "ERROR",
+                        <<"WARNING">>,
                         [
                             {psp_module, mod_payment_mollie},
-                            {description, <<"API Error fetching mandates from Mollie">>},
-                            {request_result, Error}
+                            {description, <<"Cannot create a subscription - no valid mandates">>}
                         ],
                         Context),
-                    lager:error("API error creating mollie subscription for payment ~p (user ~p): ~p",
-                                [ PaymentId, UserId, Error ]),
-                    Error
+                    ok
             end;
-        PspData ->
+        {ok, JSON} ->
             % Log an error with the payment
             m_payment_log:log(
                 PaymentId,
                 <<"ERROR">>,
                 [
                     {psp_module, mod_payment_mollie},
-                    {description, <<"Could not create subscription: PSP data missing recurringType and/or customerId">>}
+                    {description, <<"API Unexpected result fetching mandates from Mollie">>},
+                    {request_result, JSON}
                 ],
                 Context),
-            lager:error("Mollie payment PSP data missing recurringType and/or customerId, payment ~p (user ~p): ~p",
-                        [ PaymentId, UserId, PspData ]),
-            {error, pspdata}
+            lager:error("API unexpected result fetching mollie mandates for payment ~p (user ~p): ~p",
+                        [ PaymentId, UserId, JSON ]),
+            {error, unexpected_result};
+        {error, Reason} = Error ->
+            % Log an error with the payment
+            m_payment_log:log(
+                PaymentId,
+                <<"ERROR">>,
+                [
+                    {psp_module, mod_payment_mollie},
+                    {description, <<"API Error fetching mandates from Mollie">>},
+                    {request_result, Error}
+                ],
+                Context),
+            lager:error("API error creating mollie subscription for payment ~p (user ~p): ~p",
+                        [ PaymentId, UserId, Reason ]),
+            Error
     end.
-
 
 list_subscriptions(UserId, Context) ->
     CustIds = mollie_customer_ids(UserId, true, Context),
@@ -555,9 +646,9 @@ list_subscriptions(UserId, Context) ->
 
 
 mollie_list_subscriptions(CustId, Context) ->
-    case api_call(get, "customers/" ++ z_convert:to_list(CustId) ++ "/subscriptions?count=250", [], Context) of
-        {ok, #{ <<"data">> := Data } = Result} ->
-            Links = maps:get(<<"links">>, Result, #{}),
+    case api_call(get, "customers/" ++ z_convert:to_list(CustId) ++ "/subscriptions?limit=250", [], Context) of
+        {ok, #{ <<"_embedded">> := #{ <<"subscriptions">> := Data } } = Result} ->
+            Links = maps:get(<<"_links">>, Result, #{}),
             case mollie_list_subscriptions_next(Links, Context) of
                 {ok, NextData} ->
                     {ok, Data ++ NextData};
@@ -568,9 +659,9 @@ mollie_list_subscriptions(CustId, Context) ->
             Error
     end.
 
-mollie_list_subscriptions_next(#{ <<"next">> := Next }, Context) when is_binary(Next), Next =/= <<>> ->
+mollie_list_subscriptions_next(#{ <<"next">> := #{ <<"href">> := Next } }, Context) when is_binary(Next), Next =/= <<>> ->
     case api_call(get, Next, [], Context) of
-        {ok, #{ <<"data">> := Data, <<"links">> := Links }} ->
+        {ok, #{ <<"_embedded">> := #{ <<"subscriptions">> := Data }, <<"_links">> := Links }} ->
             case mollie_list_subscriptions_next(Links, Context) of
                 {ok, NextData} ->
                     {ok, Data ++ NextData};
@@ -589,11 +680,14 @@ parse_sub(#{
         <<"id">> := SubId,
         <<"customerId">> := CustId,
         <<"startDate">> := Start,
-        <<"cancelledDatetime">> := Cancelled,
-        <<"amount">> := Amount,
+        <<"amount">> := #{
+            <<"currency">> := Currency,
+            <<"value">> := Amount
+        },
         <<"interval">> := Interval,
         <<"description">> := Description
-    }) ->
+    } = Sub) ->
+    Cancelled = maps:get(<<"canceledAt">>, Sub, undefined),
     #{
         id => {mollie_subscription, CustId, SubId},
         is_valid => is_null(Cancelled),
@@ -601,7 +695,8 @@ parse_sub(#{
         end_date => to_date(Cancelled),
         description => Description,
         interval => Interval,
-        amount => z_convert:to_float(Amount)
+        amount => z_convert:to_float(Amount),
+        currency => Currency
     }.
 
 is_null(undefined) -> true;
@@ -611,6 +706,7 @@ is_null(_) -> false.
 
 to_date(undefined) -> undefined;
 to_date(null) -> undefined;
+to_date(<<>>) -> undefined;
 to_date(D) -> z_datetime:to_datetime(D).
 
 
@@ -637,8 +733,11 @@ cancel_subscription({mollie_subscription, CustId, SubId}, Context) ->
         {error, 410} ->
             lager:info("API error cancelling mollie subscription for #~p: ~p (already canceled)", [CustId, 410]),
             ok;
-        {error, Error} ->
-            lager:error("API error cancelling mollie subscription for #~p: ~p", [CustId, Error]),
+        {error, 422} ->
+            lager:info("API error cancelling mollie subscription for #~p: ~p (already canceled?)", [CustId, 422]),
+            ok;
+        {error, Reason} = Error ->
+            lager:error("API error cancelling mollie subscription for #~p: ~p", [CustId, Reason]),
             Error
     end;
 cancel_subscription(UserId, Context) when is_integer(UserId) ->
@@ -646,8 +745,10 @@ cancel_subscription(UserId, Context) when is_integer(UserId) ->
         {ok, Subs} ->
             lists:foldl(
                 fun
-                    (#{ id := SubId }, ok) ->
+                    (#{ id := SubId, end_date := undefined }, ok) ->
                         cancel_subscription(SubId, Context);
+                    (#{ id := _SubId, end_date := {_, _} }, ok) ->
+                        ok;
                     (_, {error, _} = Error) ->
                         Error
                 end,
@@ -722,7 +823,7 @@ mollie_customer_ids(UserId, OnlyRecurrent, Context) ->
                         #{
                             <<"customerId">> := CustId
                         } = PspData when is_binary(CustId) ->
-                            RecType = maps:get(<<"recurringType">>, PspData, <<>>),
+                            RecType = maps:get(<<"sequenceType">>, PspData, <<>>),
                             if
                                 not OnlyRecurrent orelse (RecType =/= <<>>) ->
                                     case lists:member(CustId, Acc) of
