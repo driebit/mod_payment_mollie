@@ -364,14 +364,14 @@ handle_new_payment(FirstPaymentId, FirstPayment, #{ <<"sequenceType">> := <<"fir
         ok -> ok;
         {error, _} = Error -> Error
     end;
-handle_new_payment(OneOfPaymentId, _OneOfPayment, JSON, Context) ->
+handle_new_payment(OneOffPaymentId, _OneOffPayment, JSON, Context) ->
     #{
         <<"status">> := Status
     } = JSON,
     lager:info("Payment PSP Mollie got status ~p for payment #~p",
-               [Status, OneOfPaymentId]),
+               [Status, OneOffPaymentId]),
     m_payment_log:log(
-        OneOfPaymentId,
+        OneOffPaymentId,
         <<"STATUS">>,
         [
             {psp_module, mod_payment_mollie},
@@ -381,7 +381,7 @@ handle_new_payment(OneOfPaymentId, _OneOfPayment, JSON, Context) ->
         Context),
     % UPDATE OUR ORDER STATUS
     DateTime = z_convert:to_datetime( status_date(JSON) ),
-    update_payment_status(OneOfPaymentId, Status, DateTime, Context).
+    update_payment_status(OneOffPaymentId, Status, DateTime, Context).
 
 
 status_date(#{ <<"status">> := <<"charged_back">> }) -> calendar:universal_time();
@@ -508,7 +508,7 @@ create_subscription(FirstPayment, Context) ->
                 <<"ERROR">>,
                 [
                     {psp_module, mod_payment_mollie},
-                    {description, <<"Could not create subscription: PSP data missing sequenceType and/or customerId">>}
+                    {description, <<"Could not create a subscription: PSP data missing sequenceType and/or customerId">>}
                 ],
                 Context),
             lager:error("Mollie payment PSP data missing sequenceType and/or customerId, payment ~p (user ~p): ~p",
@@ -586,14 +586,14 @@ create_subscription_1(FirstPayment, CustomerId, Context) ->
                             Error
                     end;
                 false ->
-                    lager:info("Mollie create subscription request but no valid mandates for customer ~p (payment ~p)",
+                    lager:info("Mollie created a subscription request but no valid mandates for customer ~p (payment ~p)",
                                [ CustomerId, PaymentId ]),
                     m_payment_log:log(
                         PaymentId,
                         <<"WARNING">>,
                         [
                             {psp_module, mod_payment_mollie},
-                            {description, <<"Can not create subscription - no valid mandates">>}
+                            {description, <<"Cannot create a subscription - no valid mandates">>}
                         ],
                         Context),
                     ok
