@@ -41,9 +41,9 @@ allowed_methods(ReqData, Context) ->
 
 process_post(ReqData, Context) ->
     Context1 = ?WM_REQ(ReqData, Context),
-    ExtId = z_convert:to_binary(z_context:get_q(id, Context1)),
-    PaymentNr = z_convert:to_binary(z_context:get_q(payment_nr, Context1)),
-    case m_payment_mollie_api:payment_sync(PaymentNr, ExtId, Context1) of
+    ExtPaymentId = z_convert:to_binary(z_context:get_q(id, Context1)),
+    FirstPaymentNr = z_convert:to_binary(z_context:get_q(payment_nr, Context1)),
+    case m_payment_mollie_api:payment_sync_webhook(FirstPaymentNr, ExtPaymentId, Context1) of
         ok ->
             ?WM_REPLY(true, Context1);
         {error, notfound} ->
