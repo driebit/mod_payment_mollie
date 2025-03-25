@@ -50,10 +50,9 @@ observe_payment_psp_view_url(#payment_psp_view_url{}, _Context) ->
 %% @doc Used to fetch the status of all payments in a non-final state. Called manually or periodically.
 observe_payment_psp_status_sync(#payment_psp_status_sync{
         payment_id = PaymentId,
-        psp_module = ?MODULE,
-        psp_external_id = TransactionId
+        psp_module = ?MODULE
     }, Context) ->
-    m_payment_mollie_api:payment_sync(PaymentId, TransactionId, Context);
+    m_payment_mollie_api:payment_sync(PaymentId, Context);
 observe_payment_psp_status_sync(#payment_psp_status_sync{}, _Context) ->
     undefined.
 
@@ -66,4 +65,5 @@ observe_cancel_recurring_psp_request(#cancel_recurring_psp_request{ user_id = Us
 %% they are newly created by the PSP and then pushed to the webhook.
 %% Non-recurring payments are synced using the psp_status_sync.
 observe_tick_24h(tick_24h, Context) ->
-    m_payment_mollie_api:payment_sync_recurrent(Context).
+    m_payment_mollie_api:payment_sync_periodic(Context),
+    m_payment_mollie_api:payment_sync_recent_pending(Context).
