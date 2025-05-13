@@ -28,6 +28,7 @@
     observe_payment_psp_request/2,
     observe_payment_psp_view_url/2,
     observe_payment_psp_status_sync/2,
+    observe_payment_psp_customer_sync/2,
     observe_cancel_recurring_psp_request/2,
     observe_tick_24h/2
 ]).
@@ -55,6 +56,10 @@ observe_payment_psp_status_sync(#payment_psp_status_sync{
     m_payment_mollie_api:payment_sync(PaymentId, Context);
 observe_payment_psp_status_sync(#payment_psp_status_sync{}, _Context) ->
     undefined.
+
+%% @doc Synchronize the user details to the customer of the psp.
+observe_payment_psp_customer_sync(#payment_psp_customer_sync{ user_id = UserId }, Context) when is_integer(UserId)->
+    m_payment_mollie_api:customer_sync(UserId, Context).
 
 %% @doc Cancel the subscription at Mollie
 observe_cancel_recurring_psp_request(#cancel_recurring_psp_request{ user_id = UserId }, Context) ->
