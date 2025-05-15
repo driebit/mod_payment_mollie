@@ -26,6 +26,8 @@
     payment_sync_recent_pending/1,
     payment_sync/2,
 
+    customer_sync/2,
+
     is_test/1,
     api_key/1,
     webhook_url/2,
@@ -502,8 +504,6 @@ map_status(<<"paidout">>) -> <<"paid">>;
 map_status(<<"charged_back">>) -> <<"refunded">>;
 map_status(Status) -> Status.
 
-
-
 api_call(Method, Endpoint, Args, Context) ->
     case api_key(Context) of
         {ok, ApiKey} ->
@@ -637,7 +637,7 @@ create_subscription_1(FirstPayment, CustomerId, Context) ->
                 true ->
                     {{Year, Month, Day}, _} = calendar:local_time(),
                     YearFromNow = io_lib:format("~4..0w-~2..0w-~2..0w", [Year + 1, Month, Day]),
-                    Email = z_convert:to_binary( m_rsc:p_no_acl(UserId, email, Context) ),
+                    Email = z_convert:to_binary( m_rsc:p_no_acl(UserId, email_raw, Context) ),
                     WebhookUrl = webhook_url(proplists:get_value(payment_nr, FirstPayment), Context),
                     Args = [
                         {'amount[value]', filter_format_price:format_price(proplists:get_value(amount, FirstPayment), Context)},
@@ -877,13 +877,7 @@ ensure_mollie_customer_id(UserId, Context) ->
                 {ok, CustId} ->
                     {ok, CustId};
                 {error, enoent} ->
-                    ContextSudo = z_acl:sudo(Context),
-                    Email = m_rsc:p_no_acl(UserId, email, Context),
-                    {Name, _Context} = z_template:render_to_iolist("_name.tpl", [ {id, UserId} ], ContextSudo),
-                    Args = [
-                        {name, iolist_to_binary(Name)},
-                        {email, Email}
-                    ],
+                    Args = customer_args(UserId, Context),
                     case api_call(post, "customers", Args, Context) of
                         {ok, Json} ->
                             {ok, maps:get(<<"id">>, Json)};
@@ -897,6 +891,37 @@ ensure_mollie_customer_id(UserId, Context) ->
             {error, resource_does_not_exist}
     end.
 
+%% @doc Update the customer information at Mollie for a given user.
+-spec customer_sync(UserId, Context) -> ok | {error, Reason} when
+    UserId :: m_rsc:resource_id(),
+    Context :: z:context(),
+    Reason :: enoent | term().
+customer_sync(UserId, Context) ->
+    case mollie_customer_id(UserId, false, Context) of
+        {ok, CustId} ->
+            Args = customer_args(UserId, Context),
+            case api_call(patch, "customers/" ++ z_convert:to_list(CustId), Args, Context) of
+                {ok, _Json} ->
+                    lager:info("Synced user ~p to mollie customer \"~s\" (~p)",
+                               [UserId, CustId, Args]),
+                    ok;
+                {error, Reason} = Error ->
+                    lager:info("Could not sync user ~p to mollie customer \"~s\" (~p): ~p",
+                               [UserId, CustId, Args, Reason]),
+                    Error
+            end;
+        {error, _} = Error ->
+            Error
+    end.
+
+customer_args(UserId, Context) ->
+    ContextSudo = z_acl:sudo(Context),
+    Email = m_rsc:p_no_acl(UserId, email_raw, Context),
+    {Name, _Context} = z_template:render_to_iolist("_name.tpl", [ {id, UserId} ], ContextSudo),
+    [
+        {name, z_string:trim(z_html:unescape(iolist_to_binary(Name)))},
+        {email, Email}
+    ].
 
 %% @doc Find the most recent valid customer id for a given user
 -spec mollie_customer_id( m_rsc:resource_id(), boolean(), z:context() ) -> {ok, binary()} | {error, term()}.
