@@ -902,12 +902,12 @@ customer_sync(UserId, Context) ->
             Args = customer_args(UserId, Context),
             case api_call(patch, "customers/" ++ z_convert:to_list(CustId), Args, Context) of
                 {ok, _Json} ->
-                    lager:info("Synced mollie customer \"~s\" for user ~p (~p)",
-                               [CustId, UserId, Args]),
+                    lager:info("Synced user ~p to mollie customer \"~s\" (~p)",
+                               [UserId, CustId, Args]),
                     ok;
                 {error, Reason} = Error ->
-                    lager:info("Could not sync mollie customer \"~s\" for user ~p (~p): ~p",
-                               [CustId, UserId, Args, Reason]),
+                    lager:info("Could not sync user ~p to mollie customer \"~s\" (~p): ~p",
+                               [UserId, CustId, Args, Reason]),
                     Error
             end;
         {error, _} = Error ->
