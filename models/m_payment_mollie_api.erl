@@ -317,7 +317,7 @@ handle_payment_sync(ThisPaymentJSON, Context) ->
                         ],
                         Context),
                     % Simulate the webhook call
-                    handle_payment_update(FirstPaymentNr, FirstPayment, ThisPaymentJSON, Context);
+                    handle_payment_update(FirstPaymentId, FirstPayment, ThisPaymentJSON, Context);
                 {psp_module, PSP} ->
                     lager:error("Payment PSP Mollie webhook call for unknown PSP ~p / ~p: ~p",
                                 [FirstPaymentNr, ExtId, PSP]),
