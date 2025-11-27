@@ -478,9 +478,9 @@ status_date(_Status, #{ <<"createdAt">> := Date }) when is_binary(Date), Date =/
 %% In the Mollie v2 API the statuses 'refunded', 'charged_back' and 'paidout' are removed.
 %% The final status is now 'paid'. The removed statuses need to be derived from the presence
 %% of links in the _links object.
-payment_status(#{ <<"_links">> := #{ <<"refunds">> := #{ <<"href">> := _ }} }) -> <<"refunded">>;
-payment_status(#{ <<"_links">> := #{ <<"chargebacks">> := #{ <<"href">> := _ }} }) -> <<"charged_back">>;
-payment_status(#{ <<"_links">> := #{ <<"settlement">> := #{ <<"href">> := _ }} }) -> <<"paidout">>;
+payment_status(#{ <<"status">> := <<"paid">>, <<"_links">> := #{ <<"chargebacks">> := #{ <<"href">> := _ }}}) -> <<"charged_back">>;
+payment_status(#{ <<"status">> := <<"paid">>, <<"_links">> := #{ <<"refunds">> := #{ <<"href">> := _ }}}) -> <<"refunded">>;
+payment_status(#{ <<"status">> := <<"paid">>, <<"_links">> := #{ <<"settlement">> := #{ <<"href">> := _ }}}) -> <<"paidout">>;
 payment_status(#{ <<"status">> := Status }) -> Status.
 
 
