@@ -467,7 +467,12 @@ handle_payment_update(OneOffPaymentId, _OneOffPayment, JSON, Context) ->
     update_payment_status(OneOffPaymentId, Status, DateTime, Context).
 
 
+%% For derived statuses (refunded, charged_back, paidout) use current time since the
+%% Mollie v2 API payment object doesn't include specific date fields for these events.
+%% The refund/chargeback/settlement dates are in separate API resources.
 status_date(<<"charged_back">>, _JSON) -> calendar:universal_time();
+status_date(<<"refunded">>, _JSON) -> calendar:universal_time();
+status_date(<<"paidout">>, _JSON) -> calendar:universal_time();
 status_date(_Status, #{ <<"expiredAt">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
 status_date(_Status, #{ <<"failedAt">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
 status_date(_Status, #{ <<"canceledAt">> := Date }) when is_binary(Date), Date =/= <<>> -> Date;
